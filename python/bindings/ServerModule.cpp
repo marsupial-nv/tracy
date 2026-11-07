@@ -41,6 +41,32 @@ auto locked( Ret (*f)( const Worker&, Args... ) )
     };
 }
 
+struct ZoneStats
+{
+    int64_t min;
+    int64_t max;
+    int64_t total;
+    double sumSq;
+    size_t count;
+    double avg;
+};
+
+static void addZoneStats( py::dict& result, const char* name, const ZoneStats& stats )
+{
+    if( !result.contains( name ) )
+    {
+        result[name] = stats;
+        return;
+    }
+    auto& total = result[name].cast<ZoneStats&>();
+    total.min = std::min( total.min, stats.min );
+    total.max = std::max( total.max, stats.max );
+    total.total += stats.total;
+    total.sumSq += stats.sumSq;
+    total.count += stats.count;
+    total.avg = total.count ? (double)total.total / total.count : 0.0;
+}
+
 PYBIND11_MODULE( TracyServerBindings, m )
 {
     m.doc() = "Tracy Server (Analysis) Bindings";
@@ -54,15 +80,6 @@ PYBIND11_MODULE( TracyServerBindings, m )
     // -------------------------------------------------------------------------
     // ZoneStats — POD summary returned by zone stat helpers
     // -------------------------------------------------------------------------
-    struct ZoneStats
-    {
-        int64_t min;
-        int64_t max;
-        int64_t total;
-        double sumSq;
-        size_t count;
-        double avg;
-    };
 
     py::class_<ZoneStats>( m, "ZoneStats" )
         .def_readonly( "min", &ZoneStats::min )
@@ -274,7 +291,7 @@ PYBIND11_MODULE( TracyServerBindings, m )
             const auto& sl = w.GetSourceLocation( kv.first );
             const char* name = w.GetZoneName( sl );
             const size_t cnt = stats.zones.size();
-            result[name] = ZoneStats{ stats.min, stats.max, stats.total, stats.sumSq, cnt, (double)stats.total / cnt };
+            addZoneStats( result, name, ZoneStats{ stats.min, stats.max, stats.total, stats.sumSq, cnt, (double)stats.total / cnt } );
         }
 #endif
         return result;
@@ -318,7 +335,7 @@ PYBIND11_MODULE( TracyServerBindings, m )
             const auto& s = kv.second;
             const double avg = (double)s.total / s.count;
             const char* name = w.GetZoneName( w.GetSourceLocation( kv.first ) );
-            result[name] = ZoneStats{ s.min, s.max, s.total, s.sumSq, s.count, avg };
+            addZoneStats( result, name, ZoneStats{ s.min, s.max, s.total, s.sumSq, s.count, avg } );
         }
         return result;
     } ) )
@@ -327,17 +344,9 @@ PYBIND11_MODULE( TracyServerBindings, m )
             // Same shape and name handling as get_all_zone_stats(), counting only zones recorded on one thread
         py::dict result;
 #ifndef TRACY_NO_STATISTICS
-        std::unordered_map<std::string, int16_t> chosen;
-        for( const auto& kv : w.GetSourceLocationZones() )
-        {
-            if( kv.second.zones.size() == 0 ) continue;
-            chosen[w.GetZoneName( w.GetSourceLocation( kv.first ) )] = kv.first;
-        }
         for( const auto& kv : w.GetSourceLocationZones() )
         {
             const std::string name = w.GetZoneName( w.GetSourceLocation( kv.first ) );
-            const auto it = chosen.find( name );
-            if( it == chosen.end() || it->second != kv.first ) continue;
             int64_t min = INT64_MAX, max = INT64_MIN, total = 0;
             double sumSq = 0;
             size_t count = 0;
@@ -353,7 +362,7 @@ PYBIND11_MODULE( TracyServerBindings, m )
                 if( dur < min ) min = dur;
                 if( dur > max ) max = dur;
             }
-            if( count ) result[name.c_str()] = ZoneStats{ min, max, total, sumSq, count, (double)total / count };
+            if( count ) addZoneStats( result, name.c_str(), ZoneStats{ min, max, total, sumSq, count, (double)total / count } );
         }
 #endif
         return result;
@@ -585,7 +594,7 @@ PYBIND11_MODULE( TracyServerBindings, m )
             if( s.count == 0 ) continue;
             const double avg = (double)s.total / (double)s.count;
             const char* cname = w.GetZoneName( w.GetSourceLocation( kv.first ) );
-            result[cname] = ZoneStats{ s.min, s.max, s.total, s.sumSq, s.count, avg };
+            addZoneStats( result, cname, ZoneStats{ s.min, s.max, s.total, s.sumSq, s.count, avg } );
         }
         return result;
     } ), "name"_a, "max_parents"_a = 100000 )
@@ -822,7 +831,7 @@ PYBIND11_MODULE( TracyServerBindings, m )
             const auto& s = kv.second;
             const size_t cnt = s.zones.size();
             if( cnt > 0 )
-                result[name] = GpuZoneStats{ s.min, s.max, s.total, s.sumSq, cnt, (double)s.total / cnt };
+                addZoneStats( result, name, GpuZoneStats{ s.min, s.max, s.total, s.sumSq, cnt, (double)s.total / cnt } );
         }
         return result;
     } ) ).def( "get_gpu_child_zone_stats", locked( +[]( const Worker& w, const std::string& name, size_t maxParents ) {
@@ -872,7 +881,7 @@ PYBIND11_MODULE( TracyServerBindings, m )
             const auto& s = kv.second;
             if( s.count == 0 ) continue;
             const char* cname = w.GetZoneName( w.GetSourceLocation( kv.first ) );
-            result[cname] = GpuZoneStats{ s.min, s.max, s.total, s.sumSq, s.count, (double)s.total / s.count };
+            addZoneStats( result, cname, GpuZoneStats{ s.min, s.max, s.total, s.sumSq, s.count, (double)s.total / s.count } );
         }
         return result;
     } ), "name"_a, "max_parents"_a = 100000 )
