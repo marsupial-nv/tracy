@@ -35,3 +35,16 @@ def test_threads_partition_the_global_stats(worker):
 
 def test_unknown_thread_is_empty(worker):
     assert worker.get_thread_zone_stats(2**40) == {}
+
+def test_global_stats_match_all_occurrences(worker):
+    import math
+
+    limit = worker.get_zone_count() + 1
+    for name, stats in worker.get_all_zone_stats().items():
+        durations = worker.get_zone_durations(name, limit)
+        assert stats.count == len(durations), name
+        assert stats.total == sum(durations), name
+        assert stats.min == min(durations), name
+        assert stats.max == max(durations), name
+        assert stats.avg == pytest.approx(sum(durations) / len(durations)), name
+        assert stats.sum_sq == pytest.approx(math.fsum(float(d) * d for d in durations)), name
